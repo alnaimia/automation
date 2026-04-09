@@ -1,4 +1,5 @@
-﻿# Import the Active Directory module
+﻿
+# Import the Active Directory module
 Import-Module ActiveDirectory
 
 # Step 1: Get the name of the user that is running the current PowerShell session
