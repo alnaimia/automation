@@ -1,0 +1,27 @@
+# --- IT Toolkit Logs ---
+log.txt
+
+# --- Windows / WSL ---
+[Dd]esktop.ini
+Thumbs.db
+$RECYCLE.BIN/
+*.lnk
+*:Zone.Identifier
+
+# --- macOS ---
+.DS_Store
+.AppleDouble
+.LSOverride
+# Thumbnails
+._*
+
+# --- Linux / Pixelbook Go ---
+# Swap files for terminal editors like Vim
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+
+# --- IDEs ---
+.vscode/
+.idea/
