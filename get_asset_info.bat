@@ -4,6 +4,23 @@
 :: Script elevated as Administrator inside ps.1
 :: ============================================================
 
+
 @echo off
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0source\get_asset_info.ps1"
+setlocal
+
+:: 1. Map the UNC path to a temporary drive letter
+pushd "%~dp0"
+
+:: 2. Identify the script path (using the drive letter from pushd)
+set "script=%~dp0source\get_asset_info.ps1"
+
+:: 3. Run PowerShell as Admin
+powershell -NoProfile -ExecutionPolicy Bypass ^
+    "Start-Process PowerShell -Verb RunAs -ArgumentList '-NoProfile -ExecutionPolicy Bypass -File ""%script%""'"
+
+:: 4. Unmap the drive and return
+popd
+
+echo.
+echo Launch process complete.
 pause

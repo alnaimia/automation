@@ -116,7 +116,13 @@ $separator
 # ---- Write to file -----------------------------------------
 Add-Content -Path $LogFile -Value $output -Encoding UTF8
 
+# ---- Display feedback to user ------------------------------
+Write-Host $output  # This prints the exact same text that went into the log
 Write-Host ""
-Write-Host "Done. Log saved to: $LogFile"
+Write-Host "Done! Results appended to: $LogFile"
 Write-Host ""
+
+Write-Host "Press Enter to exit..." -ForegroundColor Yellow
+$null = Read-Host
+
 
