@@ -31,9 +31,6 @@ $cpu  = Get-CimInstance Win32_Processor
 $ram  = Get-CimInstance Win32_PhysicalMemory
 $disk = Get-CimInstance Win32_DiskDrive
 
-$nics = Get-CimInstance Win32_NetworkAdapterConfiguration |
-        Where-Object { $_.MACAddress }
-
 # ---- Screen size -------------------------------------------
 $monitor = Get-CimInstance WmiMonitorBasicDisplayParams `
             -Namespace root\wmi `
@@ -58,32 +55,32 @@ $ramGB = [math]::Round(
 
 # ---- Storage -----------------------------------------------
 $storageList = $disk | ForEach-Object {
-    $size = if ($_.Size) {
-        [math]::Round($_.Size / 1GB, 0)
-    } else {
-        "Unknown"
-    }
-
-    $media = if ($_.MediaType) {
-        $_.MediaType
-    } else {
-        "Unknown"
-    }
-
+    $size  = if ($_.Size)      { [math]::Round($_.Size / 1GB, 0) } else { "Unknown" }
+    $media = if ($_.MediaType) { $_.MediaType }                    else { "Unknown"  }
     "$size GB ($media - $($_.Model))"
 }
 
 # ---- Network adapters --------------------------------------
-$wifi = $nics |
-    Where-Object { $_.Description -match "Wi-Fi|Wireless|802\.11" } |
-    Select-Object -First 1
+# AdapterTypeId is unreliable for Wi-Fi — Intel reports it as Ethernet (0)
+# So: Wi-Fi matched by description (consistent across all major vendors)
+#     LAN matched by PCI + type 0, then Wi-Fi excluded from result
 
-$lan = $nics |
-    Where-Object {
-        $_.Description -match "Ethernet|LAN" -and
-        $_.Description -notmatch "Virtual|Hyper-V|vEthernet"
-    } |
-    Select-Object -First 1
+$physicalPCI = Get-CimInstance Win32_NetworkAdapter | Where-Object {
+    $_.PhysicalAdapter -eq $true -and
+    $_.MACAddress                -and
+    $_.PNPDeviceID -like "PCI\*"
+}
+
+$wifiAdapter = $physicalPCI | Where-Object {
+    $_.Name -match "Wi-Fi|Wireless|802\.11|WLAN"
+} | Select-Object -First 1
+
+$lanAdapter = $physicalPCI | Where-Object {
+    $_.Name -notmatch "Wi-Fi|Wireless|802\.11|WLAN"
+} | Select-Object -First 1
+
+$wifiMAC = if ($wifiAdapter) { $wifiAdapter.MACAddress } else { "N/A" }
+$lanMAC  = if ($lanAdapter)  { $lanAdapter.MACAddress  } else { "N/A (no built-in LAN port detected)" }
 
 # ---- Build log output --------------------------------------
 $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
@@ -110,8 +107,8 @@ RAM           : $ramGB GB
 Storage       :
 $storageFormatted
 
-WiFi MAC      : $(if ($wifi) { $wifi.MACAddress } else { "N/A" })
-LAN  MAC      : $(if ($lan)  { $lan.MACAddress  } else { "N/A" })
+WiFi MAC      : $wifiMAC
+LAN  MAC      : $lanMAC
 
 $separator
 "@
@@ -122,3 +119,4 @@ Add-Content -Path $LogFile -Value $output -Encoding UTF8
 Write-Host ""
 Write-Host "Done. Log saved to: $LogFile"
 Write-Host ""
+
