@@ -12,7 +12,7 @@ setlocal
 pushd "%~dp0"
 
 :: 2. Identify the script path (using the drive letter from pushd)
-set "script=%~dp0source\get_asset_info.ps1"
+set "script=%~dp0..\scripting\get_asset_info.ps1"
 
 :: 3. Run PowerShell as Admin
 powershell -NoProfile -ExecutionPolicy Bypass ^
