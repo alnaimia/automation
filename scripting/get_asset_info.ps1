@@ -20,8 +20,10 @@ if (-not $isAdmin) {
 }
 
 # ---- Paths (log goes to parent folder, not /source) ----
-$RootDir = Split-Path -Parent $PSScriptRoot
-$LogFile = Join-Path $RootDir "log.txt"
+$RootDir  = Split-Path -Parent $PSScriptRoot
+$LogDir   = Join-Path $RootDir "log_files"
+if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir | Out-Null }
+$LogFile  = Join-Path $LogDir "get_asset_info_log.txt"
 
 # ---- Gather data -------------------------------------------
 $cs   = Get-CimInstance Win32_ComputerSystem
