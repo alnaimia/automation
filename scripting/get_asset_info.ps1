@@ -20,7 +20,7 @@ if (-not $isAdmin) {
 # -------------------------------------------------------------
 # Logging Setup (Standardized)
 # -------------------------------------------------------------
-$LogDir      = Join-Path $PSScriptRoot "..\..\log_files"
+$LogDir      = Join-Path $PSScriptRoot "..\log_files"
 $DateStamp   = Get-Date -Format "yyyy-MM-dd"
 $LogFile     = Join-Path $LogDir "asset_info_$DateStamp.log"
 
