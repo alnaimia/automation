@@ -18,7 +18,7 @@ Import-Module ActiveDirectory
 # regardless of which drive letter the .bat maps the UNC share to.
 # -----------------------------------------------------------------------------
 
-$LogDir     = Join-Path $PSScriptRoot "..\..\log_files"
+$LogDir     = Join-Path $PSScriptRoot "..\log_files"
 $DateStamp  = Get-Date -Format "yyyy-MM-dd"
 $CsvLog     = Join-Path $LogDir "offboarding_$DateStamp.csv"
 $TxtLog     = Join-Path $LogDir "offboarding_$DateStamp.log"
