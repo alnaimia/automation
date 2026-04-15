@@ -1,6 +1,6 @@
 # ============================================================
 # get_asset_info.ps1
-# Collects hardware/software info and writes to log.txt
+# Collects hardware/software info and writes to log_files directory
 # Self-elevates to Administrator if needed
 # ============================================================
 
@@ -11,19 +11,23 @@ $isAdmin = ([Security.Principal.WindowsPrincipal] `
 
 if (-not $isAdmin) {
     Write-Host "Restarting with administrative privileges..."
-
     Start-Process powershell.exe `
         -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`"" `
         -Verb RunAs
-
     exit
 }
 
-# ---- Paths (log goes to parent folder, not /source) ----
-$RootDir  = Split-Path -Parent $PSScriptRoot
-$LogDir   = Join-Path $RootDir "log_files"
-if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir | Out-Null }
-$LogFile  = Join-Path $LogDir "get_asset_info_log.txt"
+# -------------------------------------------------------------
+# Logging Setup (Standardized)
+# -------------------------------------------------------------
+$LogDir      = Join-Path $PSScriptRoot "..\..\log_files"
+$DateStamp   = Get-Date -Format "yyyy-MM-dd"
+$LogFile     = Join-Path $LogDir "asset_info_$DateStamp.log"
+
+# Ensure the log directory exists
+if (-not (Test-Path $LogDir)) {
+    New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
+}
 
 # ---- Gather data -------------------------------------------
 $cs   = Get-CimInstance Win32_ComputerSystem
@@ -63,10 +67,6 @@ $storageList = $disk | ForEach-Object {
 }
 
 # ---- Network adapters --------------------------------------
-# AdapterTypeId is unreliable for Wi-Fi — Intel reports it as Ethernet (0)
-# So: Wi-Fi matched by description (consistent across all major vendors)
-#     LAN matched by PCI + type 0, then Wi-Fi excluded from result
-
 $physicalPCI = Get-CimInstance Win32_NetworkAdapter | Where-Object {
     $_.PhysicalAdapter -eq $true -and
     $_.MACAddress                -and
@@ -87,8 +87,7 @@ $lanMAC  = if ($lanAdapter)  { $lanAdapter.MACAddress  } else { "N/A (no built-i
 # ---- Build log output --------------------------------------
 $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
 $separator = "=" * 50
-
-$storageFormatted = ($storageList | ForEach-Object { "  $_" }) -join "`n"
+$storageFormatted = ($storageList | ForEach-Object { "   $_" }) -join "`n"
 
 $output = @"
 $separator
@@ -115,16 +114,12 @@ LAN  MAC      : $lanMAC
 $separator
 "@
 
-# ---- Write to file -----------------------------------------
+# ---- Write to file & Display -------------------------------
 Add-Content -Path $LogFile -Value $output -Encoding UTF8
 
-# ---- Display feedback to user ------------------------------
-Write-Host $output  # This prints the exact same text that went into the log
+Write-Host $output 
 Write-Host ""
 Write-Host "Done! Results appended to: $LogFile"
 Write-Host ""
-
 Write-Host "Press Enter to exit..." -ForegroundColor Yellow
 $null = Read-Host
-
-
