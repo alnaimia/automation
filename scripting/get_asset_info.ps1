@@ -17,25 +17,26 @@ if (-not $isAdmin) {
     exit
 }
 
-# -------------------------------------------------------------
-# Logging Setup (Standardized)
-# -------------------------------------------------------------
-$LogDir      = Join-Path $PSScriptRoot "..\log_files"
-$DateStamp   = Get-Date -Format "yyyy-MM-dd"
-$LogFile     = Join-Path $LogDir "asset_info_$DateStamp.log"
+# ---- Logging Setup ----
+$LogDir    = Join-Path (Split-Path $PSScriptRoot -Parent) "log_files"
+$DateStamp = Get-Date -Format "yyyy-MM-dd"
+$LogFile   = Join-Path $LogDir "asset_info_$DateStamp.log"
 
-# Ensure the log directory exists
 if (-not (Test-Path $LogDir)) {
     New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
 }
 
 # ---- Gather data -------------------------------------------
+Write-Progress -Activity "Collecting asset information" -Status "Please wait..." -PercentComplete -1
+
 $cs   = Get-CimInstance Win32_ComputerSystem
 $bios = Get-CimInstance Win32_BIOS
 $os   = Get-CimInstance Win32_OperatingSystem
 $cpu  = Get-CimInstance Win32_Processor
 $ram  = Get-CimInstance Win32_PhysicalMemory
 $disk = Get-CimInstance Win32_DiskDrive
+
+Write-Progress -Activity "Collecting asset information" -Completed
 
 # ---- Screen size -------------------------------------------
 $monitor = Get-CimInstance WmiMonitorBasicDisplayParams `

@@ -1,3 +1,8 @@
+# =============================================================================
+# Stale Account Detection Script
+# Audits login activity and outputs to clean, copy-pasteable paths.
+# =============================================================================
+
 Import-Module ActiveDirectory
 
 # -----------------------------
@@ -5,23 +10,21 @@ Import-Module ActiveDirectory
 # -----------------------------
 $InactivityThresholdDays = 90
 
-# Derive paths for portability
-$LogDir      = Join-Path $PSScriptRoot "..\..\log_files"
-$DateStamp   = Get-Date -Format "yyyy-MM-dd"
-$LogFile     = Join-Path $LogDir "stale_accounts_$DateStamp.log"
-$CsvFile     = Join-Path $LogDir "stale_accounts_$DateStamp.csv"
+# 1. Resolve Paths
+$ScriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
+$ParentDir = (Get-Item $ScriptDir).Parent.FullName
+$LogDir    = Join-Path $ParentDir "log_files"
 
 # Ensure the log directory exists
 if (-not (Test-Path $LogDir)) {
     New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
 }
 
-# Initialize CSV with headers if it doesn't exist for today
-if (-not (Test-Path $CsvFile)) {
-    "SamAccountName,Enabled,NeverLoggedIn,LastLogonDate,Description,DistinguishedName,OU,ScanCutoffDate" | Out-File -FilePath $CsvFile -Encoding UTF8
-}
+$DateStamp = Get-Date -Format "yyyy-MM-dd"
+$LogFile   = Join-Path $LogDir "stale_accounts_$DateStamp.log"
+$CsvFile   = Join-Path $LogDir "stale_accounts_$DateStamp.csv"
 
-# OUs to scan
+# OUs to scan (Adjust these to your specific AD structure)
 $TargetOUs = @(
     "OU=Staff,DC=add_company,DC=ac,DC=uk",
     "OU=Students,DC=add_company,DC=ac,DC=uk"
@@ -54,42 +57,49 @@ function Get-StaleUsers {
 # Main Workflow
 # -----------------------------
 
+Clear-Host
+Write-Host "--- Active Directory Stale Account Audit ---" -ForegroundColor Cyan
+Write-Host "Threshold: $InactivityThresholdDays days"
 Write-Log "===== Stale Account Scan Started ====="
-$CutoffDate = (Get-Date).AddDays(-$InactivityThresholdDays).ToString("yyyy-MM-dd")
-Write-Log "Threshold: $InactivityThresholdDays days | Cutoff date: $CutoffDate"
 
+$CutoffDate = (Get-Date).AddDays(-$InactivityThresholdDays).ToString("yyyy-MM-dd")
 $CsvRows = [System.Collections.Generic.List[PSObject]]::new()
 
 foreach ($ou in $TargetOUs) {
+    Write-Host "Scanning: $ou... " -NoNewline
     Write-Log "Scanning OU: $ou"
 
     try {
         $staleUsers = @(Get-StaleUsers -SearchBase $ou)
+        
+        if ($staleUsers.Count -eq 0) {
+            Write-Host "Done (0 found)" -ForegroundColor Gray
+            Write-Log "No stale accounts found in $ou"
+        } else {
+            Write-Host "Done ($($staleUsers.Count) found)" -ForegroundColor Yellow
+            Write-Log "Found $($staleUsers.Count) stale account(s) in $ou"
+        }
     }
     catch {
+        Write-Host "FAILED" -ForegroundColor Red
         Write-Log "ERROR scanning OU: $ou | $_"
         continue
     }
 
-    if ($staleUsers.Count -eq 0) {
-        Write-Log "No stale accounts found in $ou"
-        continue
-    }
-
-    Write-Log "Found $($staleUsers.Count) stale account(s) in $ou"
-
     foreach ($user in $staleUsers) {
-        $accountEnabled   = $user.Enabled
+        # Determine Login Status
         $neverLoggedIn    = ($null -eq $user.LastLogonDate)
         $lastLogonClean   = if ($neverLoggedIn) { "" } else { $user.LastLogonDate }
         $lastLogonDisplay = if ($neverLoggedIn) { "Never Logged In" } else { $user.LastLogonDate }
         $desc             = if ($user.Description) { $user.Description } else { "No description" }
 
-        Write-Log "STALE: $($user.SamAccountName) | Enabled: $accountEnabled | LastLogon: $lastLogonDisplay"
+        # Audit Trail for the .txt file
+        Write-Log "STALE: $($user.SamAccountName) | Enabled: $($user.Enabled) | LastLogon: $lastLogonDisplay | Desc: $desc"
 
+        # Data for the .csv file
         $CsvRows.Add([PSCustomObject]@{
             SamAccountName    = $user.SamAccountName
-            Enabled           = $accountEnabled
+            Enabled           = $user.Enabled
             NeverLoggedIn     = $neverLoggedIn
             LastLogonDate     = $lastLogonClean
             Description       = $desc
@@ -100,13 +110,29 @@ foreach ($ou in $TargetOUs) {
     }
 }
 
+# -----------------------------
+# Export and Summary
+# -----------------------------
+
+Write-Host "`nScan Complete!" -ForegroundColor Cyan
+
 if ($CsvRows.Count -gt 0) {
-    # Using Append here so if you run the script multiple times a day, 
-    # it adds to the CSV rather than overwriting the headers.
     $CsvRows | Export-Csv -Path $CsvFile -NoTypeInformation -Encoding UTF8 -Append
-    Write-Log "CSV updated: $($CsvRows.Count) total stale account(s) written to $CsvFile"
+    
+    Write-Host "Total stale accounts found: " -NoNewline
+    Write-Host "$($CsvRows.Count)" -ForegroundColor Yellow
+    
+    Write-Host "CSV Result: " -NoNewline
+    Write-Host "$CsvFile" -ForegroundColor White
 } else {
-    Write-Log "No stale accounts found across all OUs."
+    Write-Host "No stale accounts detected across all OUs." -ForegroundColor Green
+    Write-Log "No stale accounts found in this run."
 }
 
-Write-Log "===== Stale Account Scan Complete ====="
+Write-Host "Log file:   " -NoNewline
+Write-Host "$LogFile" -ForegroundColor Gray
+
+Write-Log "===== Stale Account Scan Complete | Total Found: $($CsvRows.Count) ====="
+
+Write-Host "`nPress Enter to exit..." -ForegroundColor Cyan
+$null = Read-Host

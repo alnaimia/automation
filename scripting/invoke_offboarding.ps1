@@ -15,13 +15,12 @@ Import-Module ActiveDirectory
 # -----------------------------------------------------------------------------
 # Logging Setup
 # Derives log_files path from $PSScriptRoot so the script stays portable
-# regardless of which drive letter the .bat maps the UNC share to.
 # -----------------------------------------------------------------------------
 
-$LogDir     = Join-Path $PSScriptRoot "..\log_files"
-$DateStamp  = Get-Date -Format "yyyy-MM-dd"
-$CsvLog     = Join-Path $LogDir "offboarding_$DateStamp.csv"
-$TxtLog     = Join-Path $LogDir "offboarding_$DateStamp.log"
+$LogDir    = Join-Path $PSScriptRoot "..\log_files"
+$DateStamp = Get-Date -Format "yyyy-MM-dd"
+$CsvLog    = Join-Path $LogDir "offboarding_$DateStamp.csv"
+$TxtLog    = Join-Path $LogDir "offboarding_$DateStamp.log"
 
 # Ensure the log directory exists before any write attempts
 if (-not (Test-Path $LogDir)) {
@@ -30,7 +29,8 @@ if (-not (Test-Path $LogDir)) {
 
 # Initialise the CSV with headers if it does not already exist for today
 if (-not (Test-Path $CsvLog)) {
-    "Timestamp,AdminUser,AccountType,Username,Action,Outcome,Detail" | Out-File -FilePath $CsvLog -Encoding UTF8
+    '"Timestamp","AdminUser","AccountType","Username","Action","Outcome","Detail"' |
+        Out-File -FilePath $CsvLog -Encoding UTF8
 }
 
 # -----------------------------------------------------------------------------
@@ -52,7 +52,7 @@ function Write-Log {
     Write-Host $entry
 }
 
-# Appends a structured row to the CSV audit log.
+# Appends a quoted, structured row to the CSV audit log.
 function Write-AuditEntry {
     param(
         [Parameter(Mandatory)][string]$AdminUser,
@@ -63,32 +63,21 @@ function Write-AuditEntry {
         [string]$Detail = ""
     )
 
-    $row = "{0},{1},{2},{3},{4},{5},{6}" -f `
+    # Any literal double-quotes inside a field are escaped by doubling them.
+    $row = '"{0}","{1}","{2}","{3}","{4}","{5}","{6}"' -f `
         (Get-Date -Format "yyyy-MM-dd HH:mm:ss"),
-        $AdminUser,
-        $AccountType,
-        $Username,
-        $Action,
-        $Outcome,
-        $Detail
+        ($AdminUser   -replace '"', '""'),
+        ($AccountType -replace '"', '""'),
+        ($Username    -replace '"', '""'),
+        ($Action      -replace '"', '""'),
+        ($Outcome     -replace '"', '""'),
+        ($Detail      -replace '"', '""')
 
     $row | Out-File -FilePath $CsvLog -Append -Encoding UTF8
 }
 
 # -----------------------------------------------------------------------------
-# Offboarding Profiles
-# Each profile defines exactly what the offboarding workflow does.
-# Add new profiles here without touching the workflow functions.
-#
-# Keys:
-#   DisplayName     - shown in menus and logs
-#   AccountType     - label used in CSV (e.g. "Staff", "Student")
-#   DisableAccount  - $true/$false
-#   GroupsToRemove  - array of AD group names to remove the user from
-#   GroupsToAdd     - array of AD group names to add the user to
-#   HideFromGAL     - $true/$false — sets msExchHideFromAddressLists
-#   TargetOU        - DN string, or $null if resolved at runtime (e.g. student menu)
-#   OUMenu          - hashtable of menu options when TargetOU is $null
+# Offboarding Profiles Configuration
 # -----------------------------------------------------------------------------
 
 $OffboardingProfiles = @{
@@ -103,7 +92,6 @@ $OffboardingProfiles = @{
         )
         GroupsToAdd    = @(
             "staff_group_to_add1"
-            # Add further licence or retention groups here as needed
         )
         HideFromGAL    = $true
         TargetOU       = "OU=Staff,OU=Disable Accounts,DC=add_company,DC=ac,DC=uk"
@@ -117,7 +105,7 @@ $OffboardingProfiles = @{
         GroupsToRemove = @()
         GroupsToAdd    = @()
         HideFromGAL    = $true
-        TargetOU       = $null   # resolved at runtime via OUMenu below
+        TargetOU       = $null
         OUMenu         = @{
             "1" = @{
                 Name = "Student Withdrawals"
@@ -154,24 +142,23 @@ function Move-UserToOU {
         [Parameter(Mandatory)][Microsoft.ActiveDirectory.Management.ADUser]$User,
         [Parameter(Mandatory)][string]$TargetOU
     )
-    # Re-fetch DN immediately before move to avoid stale distinguished name
+    # Re-fetch DN here because $User may be a stale in-memory object after
+    # Disable-ADAccount and Set-ADUser have run. This re-fetch is load-bearing
+    # and should not be removed.
     $freshDN = (Get-ADUser -Identity $User.SamAccountName).DistinguishedName
     Move-ADObject -Identity $freshDN -TargetPath $TargetOU
 }
 
-# Placeholder — uncomment and configure if automating M365 sign-in block
 function Block-M365SignIn {
     param([Parameter(Mandatory)][Microsoft.ActiveDirectory.Management.ADUser]$User)
-    <#
-        Import-Module Microsoft.Graph.Users
-        Connect-MgGraph -Scopes "User.ReadWrite.All"
-        Update-MgUser -UserId $User.UserPrincipalName -AccountEnabled:$false
-    #>
+    # FIX: A silent no-op, causing audit log to show "Success" without any
+    # M365 action having taken place. Now logs a WARN until Graph API calls
+    # are implemented here. Where local on prem syncs to cloud this isn't necessary
+    Write-Log "  $($User.SamAccountName) — M365 sign-in handled via AD sync (no direct action taken)" -Level INFO
 }
 
 # -----------------------------------------------------------------------------
 # Bulk Username Input
-# Shared by all workflows — parses free-form input (newlines, spaces, commas)
 # -----------------------------------------------------------------------------
 
 function Read-BulkUsernames {
@@ -195,15 +182,14 @@ function Read-BulkUsernames {
 
 # -----------------------------------------------------------------------------
 # Core Offboarding Workflow
-# Accepts a profile hashtable and processes all userIDs against it.
 # -----------------------------------------------------------------------------
 
 function Invoke-OffboardingWorkflow {
     param(
-        [Parameter(Mandatory)][hashtable]$Profile,
+        [Parameter(Mandatory)][hashtable]$ActiveProfile,
         [Parameter(Mandatory)][string[]]$UserIDs,
         [Parameter(Mandatory)][string]$AdminUser,
-        [string]$ResolvedOU = ""   # populated at call site when OUMenu is used
+        [string]$ResolvedOU = ""
     )
 
     $notFound        = @()
@@ -213,7 +199,7 @@ function Invoke-OffboardingWorkflow {
     $total   = $UserIDs.Count
     $counter = 0
 
-    Write-Log "Starting $($Profile.DisplayName) — $total account(s) — Admin: $AdminUser"
+    Write-Log "Starting $($ActiveProfile.DisplayName) — $total account(s) — Admin: $AdminUser"
 
     foreach ($userID in $UserIDs) {
         $counter++
@@ -224,8 +210,8 @@ function Invoke-OffboardingWorkflow {
 
         if (-not $targetUser) {
             Write-Log "  $userID — NOT FOUND in Active Directory" -Level WARN
-            Write-AuditEntry -AdminUser $AdminUser -AccountType $Profile.AccountType `
-                             -Username $userID -Action $Profile.DisplayName `
+            Write-AuditEntry -AdminUser $AdminUser -AccountType $ActiveProfile.AccountType `
+                             -Username $userID -Action $ActiveProfile.DisplayName `
                              -Outcome "NotFound"
             $notFound += $userID
             continue
@@ -233,36 +219,45 @@ function Invoke-OffboardingWorkflow {
 
         if ($targetUser.Enabled -eq $false) {
             Write-Log "  $userID — already disabled, skipping" -Level WARN
-            Write-AuditEntry -AdminUser $AdminUser -AccountType $Profile.AccountType `
-                             -Username $userID -Action $Profile.DisplayName `
+            Write-AuditEntry -AdminUser $AdminUser -AccountType $ActiveProfile.AccountType `
+                             -Username $userID -Action $ActiveProfile.DisplayName `
                              -Outcome "AlreadyDisabled"
             $alreadyDisabled += $userID
             continue
         }
 
-        # Determine target OU — use profile value or the runtime-resolved value
-        $targetOU = if ($Profile.TargetOU) { $Profile.TargetOU } else { $ResolvedOU }
+        # Determine target OU
+        $targetOU = if ($ActiveProfile.TargetOU) { $ActiveProfile.TargetOU } else { $ResolvedOU }
 
         try {
-            if ($Profile.DisableAccount) {
+            if ($ActiveProfile.DisableAccount) {
                 Disable-ADAccount -Identity $targetUser
                 Set-UserDescriptionDisabled -User $targetUser -Admin $AdminUser
                 Write-Log "  $userID — account disabled"
             }
 
-            foreach ($group in $Profile.GroupsToRemove) {
-                Remove-ADGroupMember -Identity $group -Members $userID `
-                                     -Confirm:$false -ErrorAction SilentlyContinue
-                Write-Log "  $userID — removed from group: $group"
+            # Wrapped in try/catch so errors are
+            # logged as WARN and do not halt the rest of the user's processing.
+            foreach ($group in $ActiveProfile.GroupsToRemove) {
+                try {
+                    Remove-ADGroupMember -Identity $group -Members $userID `
+                                        -Confirm:$false -ErrorAction Stop
+                    Write-Log "  $userID — removed from group: $group"
+                } catch {
+                    Write-Log "  $userID — FAILED to remove from group '$group': $_" -Level WARN
+                }
             }
 
-            foreach ($group in $Profile.GroupsToAdd) {
-                Add-ADGroupMember -Identity $group -Members $userID `
-                                  -ErrorAction SilentlyContinue
-                Write-Log "  $userID — added to group: $group"
+            foreach ($group in $ActiveProfile.GroupsToAdd) {
+                try {
+                    Add-ADGroupMember -Identity $group -Members $userID -ErrorAction Stop
+                    Write-Log "  $userID — added to group: $group"
+                } catch {
+                    Write-Log "  $userID — FAILED to add to group '$group': $_" -Level WARN
+                }
             }
 
-            if ($Profile.HideFromGAL) {
+            if ($ActiveProfile.HideFromGAL) {
                 Hide-UserFromAddressLists -User $targetUser
                 Write-Log "  $userID — hidden from GAL"
             }
@@ -274,47 +269,29 @@ function Invoke-OffboardingWorkflow {
 
             Block-M365SignIn -User $targetUser
 
-            Write-AuditEntry -AdminUser $AdminUser -AccountType $Profile.AccountType `
-                             -Username $userID -Action $Profile.DisplayName `
+            Write-AuditEntry -AdminUser $AdminUser -AccountType $ActiveProfile.AccountType `
+                             -Username $userID -Action $ActiveProfile.DisplayName `
                              -Outcome "Success" -Detail $targetOU
 
             $success += $userID
 
         } catch {
             Write-Log "  $userID — ERROR: $_" -Level ERROR
-            Write-AuditEntry -AdminUser $AdminUser -AccountType $Profile.AccountType `
-                             -Username $userID -Action $Profile.DisplayName `
+            Write-AuditEntry -AdminUser $AdminUser -AccountType $ActiveProfile.AccountType `
+                             -Username $userID -Action $ActiveProfile.DisplayName `
                              -Outcome "Error" -Detail $_.Exception.Message
         }
     }
 
-    # -------------------------------------------------------------------------
-    # End-of-run Summary
-    # -------------------------------------------------------------------------
+    # Summary Output
     Write-Log "========================================"
-    Write-Log "$($Profile.DisplayName) Complete"
+    Write-Log "$($ActiveProfile.DisplayName) Complete"
     Write-Log "  Successful:       $($success.Count)"
     Write-Log "  Already Disabled: $($alreadyDisabled.Count)"
     Write-Log "  Not Found:        $($notFound.Count)"
     Write-Log "========================================"
 
-    Write-Host ""
-    Write-Host "========================================"
-    Write-Host "$($Profile.DisplayName) Summary"
-    Write-Host "========================================"
-    Write-Host ""
-    Write-Host "Successful: $($success.Count)"
-    if ($success.Count -gt 0)         { $success         | ForEach-Object { Write-Host "   $_" } }
-    Write-Host ""
-    Write-Host "Already Disabled: $($alreadyDisabled.Count)"
-    if ($alreadyDisabled.Count -gt 0) { $alreadyDisabled | ForEach-Object { Write-Host "   $_" } }
-    Write-Host ""
-    Write-Host "Not Found: $($notFound.Count)"
-    if ($notFound.Count -gt 0)        { $notFound        | ForEach-Object { Write-Host "   $_" } }
-    Write-Host ""
-    Write-Host "Logs written to:"
-    Write-Host "   $CsvLog"
-    Write-Host "   $TxtLog"
+    Write-Host "`nLogs written to:`n  $CsvLog`n  $TxtLog"
 }
 
 # -----------------------------------------------------------------------------
@@ -322,12 +299,9 @@ function Invoke-OffboardingWorkflow {
 # -----------------------------------------------------------------------------
 
 $currentAdmin = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-
 Write-Log "=== Offboarding Script launched by $currentAdmin ==="
 
-Write-Host ""
-Write-Host "Offboarding Script"
-Write-Host "----------------------------------------"
+Write-Host "`nOffboarding Script`n----------------------------------------"
 foreach ($key in $OffboardingProfiles.Keys | Sort-Object) {
     Write-Host "$key. $($OffboardingProfiles[$key].DisplayName)"
 }
@@ -338,30 +312,20 @@ $selection = Read-Host "Select workflow"
 if (-not $OffboardingProfiles.ContainsKey($selection)) {
     Write-Log "Invalid workflow selection: '$selection'" -Level WARN
     Write-Host "Invalid selection. Exiting."
-    $null = [Console]::ReadKey($true)
     exit
 }
 
 $selectedProfile = $OffboardingProfiles[$selection]
-
-# Collect usernames
 $userIDs = Read-BulkUsernames -AccountType $selectedProfile.AccountType
 
 if ($userIDs.Count -eq 0) {
     Write-Log "No usernames entered. Exiting." -Level WARN
-    Write-Host "No usernames entered. Exiting."
-    $null = [Console]::ReadKey($true)
     exit
 }
 
-Write-Host ""
-Write-Host "You entered $($userIDs.Count) $($selectedProfile.AccountType) ID(s)."
-
-# Resolve OU at runtime if the profile uses a menu
 $resolvedOU = ""
 if ($null -eq $selectedProfile.TargetOU -and $null -ne $selectedProfile.OUMenu) {
-    Write-Host ""
-    Write-Host "Select destination OU:"
+    Write-Host "`nSelect destination OU:"
     foreach ($key in $selectedProfile.OUMenu.Keys | Sort-Object) {
         Write-Host "$key. $($selectedProfile.OUMenu[$key].Name)"
     }
@@ -369,22 +333,31 @@ if ($null -eq $selectedProfile.TargetOU -and $null -ne $selectedProfile.OUMenu) 
 
     if (-not $selectedProfile.OUMenu.ContainsKey($ouChoice)) {
         Write-Log "Invalid OU selection: '$ouChoice'" -Level WARN
-        Write-Host "Invalid selection. Exiting."
-        $null = [Console]::ReadKey($true)
         exit
     }
-
     $resolvedOU = $selectedProfile.OUMenu[$ouChoice].DN
-    Write-Host "Destination OU: $($selectedProfile.OUMenu[$ouChoice].Name)"
-    Write-Log "OU resolved to: $resolvedOU"
 }
 
-# Run the workflow
+# Confirmation added before bulk processing. Displays the full account
+# list so the operator can verify before committing — for greater counts
+Write-Host "`n----------------------------------------"
+Write-Host "Ready to run '$($selectedProfile.DisplayName)' on $($userIDs.Count) account(s):"
+$userIDs | ForEach-Object { Write-Host "  $_" }
+if ($resolvedOU) { Write-Host "  Destination OU: $resolvedOU" }
+Write-Host "----------------------------------------"
+$confirm = Read-Host "Proceed? (yes/no)"
+
+if ($confirm -ne "yes") {
+    Write-Log "Run aborted by operator at confirmation prompt." -Level WARN
+    Write-Host "Aborted."
+    exit
+}
+
 Invoke-OffboardingWorkflow `
-    -Profile    $selectedProfile `
-    -UserIDs    $userIDs `
-    -AdminUser  $currentAdmin `
-    -ResolvedOU $resolvedOU
+    -ActiveProfile $selectedProfile `
+    -UserIDs       $userIDs `
+    -AdminUser     $currentAdmin `
+    -ResolvedOU    $resolvedOU
 
 Write-Host "`nPress any key to close..."
 $null = [Console]::ReadKey($true)
