@@ -4,7 +4,7 @@ setlocal
 REM Switch to the script folder safely, even if UNC path
 pushd "%~dp0"
 
-set "script=%~dp0..\scripts\get_asset_info.ps1"
+set "script=%~dp0..\scripting\get_asset_info.ps1"
 
 powershell -NoProfile -ExecutionPolicy Bypass ^
     "Start-Process PowerShell -Verb RunAs -ArgumentList '-NoProfile -ExecutionPolicy Bypass -File ""%script%""'"
