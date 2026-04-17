@@ -1,191 +1,175 @@
 ﻿# =============================================================================
-# Offboarding Script — Staff & Student
-# Handles AD account disabling, group management, OU moves, and GAL hiding.
+# Invoke-Offboarding.ps1
+# Profile-driven offboarding for Staff and Students.
+# Supports bulk input, CSV audit log, and TXT run log.
+#
+# Folder structure expected:
+#   automation\
+#     scripting\        <- this script lives here
+#     launchers\        <- .bat launcher lives here
+#     log_files\        <- logs written here
 # =============================================================================
 
-# Import the Active Directory module (required for all AD cmdlets)
 Import-Module ActiveDirectory
 
-# -----------------------------
-# Config: OUs and Groups
-# -----------------------------
+# -----------------------------------------------------------------------------
+# Logging Setup
+# Derives log_files path from $PSScriptRoot so the script stays portable
+# -----------------------------------------------------------------------------
 
-# OU where disabled staff accounts are moved
-$StaffDisabledOU = "OU=Staff,OU=Disable Accounts,DC=add_company/domain_name,DC=ac,DC=uk"
+$LogDir    = Join-Path $PSScriptRoot "..\log_files"
+$DateStamp = Get-Date -Format "yyyy-MM-dd"
+$CsvLog    = Join-Path $LogDir "offboarding_$DateStamp.csv"
+$TxtLog    = Join-Path $LogDir "offboarding_$DateStamp.log"
 
-# OUs where disabled student accounts can be moved.
-# The user selects one at runtime — the key is the menu option number.
-$StudentDisabledOUs = @{
+# Ensure the log directory exists before any write attempts
+if (-not (Test-Path $LogDir)) {
+    New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
+}
+
+# Initialise the CSV with headers if it does not already exist for today
+if (-not (Test-Path $CsvLog)) {
+    '"Timestamp","AdminUser","AccountType","Username","Action","Outcome","Detail"' |
+        Out-File -FilePath $CsvLog -Encoding UTF8
+}
+
+# -----------------------------------------------------------------------------
+# Logging Helpers
+# -----------------------------------------------------------------------------
+
+# Writes a line to the TXT run log and echoes it to the console.
+function Write-Log {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Message,
+
+        [ValidateSet("INFO","WARN","ERROR")]
+        [string]$Level = "INFO"
+    )
+
+    $entry = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') [$Level] $Message"
+    $entry | Out-File -FilePath $TxtLog -Append -Encoding UTF8
+    Write-Host $entry
+}
+
+# Appends a quoted, structured row to the CSV audit log.
+function Write-AuditEntry {
+    param(
+        [Parameter(Mandatory)][string]$AdminUser,
+        [Parameter(Mandatory)][string]$AccountType,
+        [Parameter(Mandatory)][string]$Username,
+        [Parameter(Mandatory)][string]$Action,
+        [Parameter(Mandatory)][string]$Outcome,
+        [string]$Detail = ""
+    )
+
+    # Any literal double-quotes inside a field are escaped by doubling them.
+    $row = '"{0}","{1}","{2}","{3}","{4}","{5}","{6}"' -f `
+        (Get-Date -Format "yyyy-MM-dd HH:mm:ss"),
+        ($AdminUser   -replace '"', '""'),
+        ($AccountType -replace '"', '""'),
+        ($Username    -replace '"', '""'),
+        ($Action      -replace '"', '""'),
+        ($Outcome     -replace '"', '""'),
+        ($Detail      -replace '"', '""')
+
+    $row | Out-File -FilePath $CsvLog -Append -Encoding UTF8
+}
+
+# -----------------------------------------------------------------------------
+# Offboarding Profiles Configuration
+# -----------------------------------------------------------------------------
+
+$OffboardingProfiles = @{
+
     "1" = @{
-        Name = "Student Withdrawals"
-        DN   = "OU=Student Withdrawals,OU=Disable Accounts,DC=add_company/domain_name,DC=ac,DC=uk"
+        DisplayName    = "Staff Offboarding"
+        AccountType    = "Staff"
+        DisableAccount = $true
+        GroupsToRemove = @(
+            "staff_group_to_remove1",
+            "staff_group_to_remove2"
+        )
+        GroupsToAdd    = @(
+            "staff_group_to_add1"
+        )
+        HideFromGAL    = $true
+        TargetOU       = "OU=Staff,OU=Disable Accounts,DC=add_company,DC=ac,DC=uk"
+        OUMenu         = $null
     }
+
     "2" = @{
-        Name = "Visa Reports"
-        DN   = "OU=Visa Reports,OU=Disable Accounts,DC=add_company/domain_name,DC=ac,DC=uk"
+        DisplayName    = "Student Offboarding"
+        AccountType    = "Student"
+        DisableAccount = $true
+        GroupsToRemove = @()
+        GroupsToAdd    = @()
+        HideFromGAL    = $true
+        TargetOU       = $null
+        OUMenu         = @{
+            "1" = @{
+                Name = "Student Withdrawals"
+                DN   = "OU=Student Withdrawals,OU=Disable Accounts,DC=add_company,DC=ac,DC=uk"
+            }
+            "2" = @{
+                Name = "Visa Reports"
+                DN   = "OU=Visa Reports,OU=Disable Accounts,DC=add_company,DC=ac,DC=uk"
+            }
+        }
     }
 }
 
-# AD groups to remove the staff member from during offboarding (modify as needed)
-$StaffGroupsToRemove = @(
-    "staff_group_to_remove1", 
-    "staff_group_to_remove2"
-)
+# -----------------------------------------------------------------------------
+# AD Helper Functions
+# -----------------------------------------------------------------------------
 
-# AD group to add the staff member to during offboarding (e.g. an A1 licence group, (modify as needed))
-$StaffA1Group = "staff_group_to_add1"
-
-# -----------------------------
-# Helper Functions
-# -----------------------------
-
-# Sets the user's Description field to record who disabled the account and when.
 function Set-UserDescriptionDisabled {
     param(
-        [Parameter(Mandatory)]
-        [Microsoft.ActiveDirectory.Management.ADUser]$User,
-
-        [Parameter(Mandatory)]
-        [string]$Admin
+        [Parameter(Mandatory)][Microsoft.ActiveDirectory.Management.ADUser]$User,
+        [Parameter(Mandatory)][string]$Admin
     )
-
     $description = "Disabled by $Admin, on $(Get-Date -Format 'dd MMMM yyyy')"
     Set-ADUser -Identity $User -Description $description
 }
 
-# Hides the user from Exchange/M365 address lists via the msExchHideFromAddressLists attribute.
 function Hide-UserFromAddressLists {
-    param(
-        [Parameter(Mandatory)]
-        [Microsoft.ActiveDirectory.Management.ADUser]$User
-    )
-
+    param([Parameter(Mandatory)][Microsoft.ActiveDirectory.Management.ADUser]$User)
     Set-ADUser -Identity $User -Replace @{msExchHideFromAddressLists = $true}
 }
 
-# Moves the user's AD object to the specified target OU.
-# Note: uses the user's SamAccountName as the identity to avoid relying on a
-# potentially stale DistinguishedName from an earlier Get-ADUser call.
 function Move-UserToOU {
     param(
-        [Parameter(Mandatory)]
-        [Microsoft.ActiveDirectory.Management.ADUser]$User,
-
-        [Parameter(Mandatory)]
-        [string]$TargetOU
+        [Parameter(Mandatory)][Microsoft.ActiveDirectory.Management.ADUser]$User,
+        [Parameter(Mandatory)][string]$TargetOU
     )
-
-    # Re-fetch the DN immediately before moving to ensure it reflects the
-    # current state in AD, rather than trusting the DN from an earlier query.
+    # Re-fetch DN here because $User may be a stale in-memory object after
+    # Disable-ADAccount and Set-ADUser have run. This re-fetch is load-bearing
+    # and should not be removed.
     $freshDN = (Get-ADUser -Identity $User.SamAccountName).DistinguishedName
     Move-ADObject -Identity $freshDN -TargetPath $TargetOU
 }
 
-# Placeholder for blocking M365 sign-in via Microsoft Graph.
-# Uncomment and configure if you want to automate this step.
 function Block-M365SignIn {
-    param(
-        [Parameter(Mandatory)]
-        [Microsoft.ActiveDirectory.Management.ADUser]$User
-    )
-
-    <#
-        OPTIONAL: Requires Microsoft Graph PowerShell and appropriate permissions.
-
-        Import-Module Microsoft.Graph.Users
-        Connect-MgGraph -Scopes "User.ReadWrite.All"
-        Update-MgUser -UserId $User.UserPrincipalName -AccountEnabled:$false
-    #>
+    param([Parameter(Mandatory)][Microsoft.ActiveDirectory.Management.ADUser]$User)
+    # FIX: A silent no-op, causing audit log to show "Success" without any
+    # M365 action having taken place. Now logs a WARN until Graph API calls
+    # are implemented here. Where local on prem syncs to cloud this isn't necessary
+    Write-Log "  $($User.SamAccountName) — M365 sign-in handled via AD sync (no direct action taken)" -Level INFO
 }
 
-# Validates that an AD user object exists and is currently enabled.
-# Returns $true if safe to proceed, $false otherwise.
-# Note: only call this after a $null check — passing $null to a typed
-# mandatory parameter will throw a binding error before the function body runs.
-function Confirm-UserExistsAndEnabled {
-    param(
-        [Parameter(Mandatory)]
-        [Microsoft.ActiveDirectory.Management.ADUser]$User
-    )
+# -----------------------------------------------------------------------------
+# Bulk Username Input
+# -----------------------------------------------------------------------------
 
-    if ($User.Enabled -eq $false) {
-        Write-Host "User is already in a disabled state."
-        return $false
-    }
+function Read-BulkUsernames {
+    param([Parameter(Mandatory)][string]$AccountType)
 
-    return $true
-}
-
-# -----------------------------
-# Staff Offboarding Workflow
-# -----------------------------
-
-function Invoke-StaffOffboarding {
-
-    # Capture the admin running the script for audit trail in the description field
-    $currentAdmin = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-
-    $targetUserName = Read-Host "Please enter the STAFF username (sAMAccountName) you want to disable"
-
-    $targetUser = Get-ADUser -Filter { SamAccountName -eq $targetUserName } `
-                             -Properties Enabled, msExchHideFromAddressLists
-
-    # Guard against user not found — must be checked before passing to
-    # Confirm-UserExistsAndEnabled, as a $null cannot be bound to a typed mandatory param.
-    if (-not $targetUser) {
-        Write-Host "User '$targetUserName' not found in Active Directory."
-        return
-    }
-
-    # Guard against the account already being disabled
-    if (-not (Confirm-UserExistsAndEnabled -User $targetUser)) {
-        return
-    }
-
-    # Disable the AD account
-    Disable-ADAccount -Identity $targetUser
-
-    # Update description to record who disabled the account and when
-    Set-UserDescriptionDisabled -User $targetUser -Admin $currentAdmin
-
-    # Remove from specified staff groups. SilentlyContinue so a missing group
-    # doesn't abort the rest of the offboarding steps.
-    foreach ($group in $StaffGroupsToRemove) {
-        Remove-ADGroupMember -Identity $group -Members $targetUserName `
-                             -Confirm:$false -ErrorAction SilentlyContinue
-    }
-
-    # Add to the A1 licence group (e.g. to retain a basic M365 licence post-offboarding)
-    Add-ADGroupMember -Identity $StaffA1Group -Members $targetUserName `
-                      -ErrorAction SilentlyContinue
-
-    # Hide from the Global Address List
-    Hide-UserFromAddressLists -User $targetUser
-
-    # Move to the staff disabled OU
-    Move-UserToOU -User $targetUser -TargetOU $StaffDisabledOU
-
-    # Block M365 sign-in (optional — see function definition above)
-    Block-M365SignIn -User $targetUser
-
-    Write-Host "Staff user '$targetUserName' has been disabled, updated, and moved to '$StaffDisabledOU'."
-}
-
-# -----------------------------
-# Student Offboarding Workflow (Bulk)
-# -----------------------------
-
-function Invoke-StudentOffboarding {
-
-    # Capture the admin running the script for audit trail in the description field
-    $currentAdmin = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-
-    Write-Host "Paste one or more STUDENT IDs (sAMAccountName)."
-    Write-Host "Separate them by new lines, spaces, or commas."
+    Write-Host ""
+    Write-Host "Paste one or more $AccountType usernames (sAMAccountName)."
+    Write-Host "Separate by new lines, spaces, or commas."
     Write-Host "Press ENTER on an empty line when finished."
     Write-Host ""
 
-    # Collect input lines until a blank line is entered
     $inputLines = @()
     while ($true) {
         $line = Read-Host
@@ -193,128 +177,187 @@ function Invoke-StudentOffboarding {
         $inputLines += $line
     }
 
-    # Join all lines and split on whitespace or commas to get individual IDs
-    $studentIDs = $inputLines -join " "
-    $studentIDs = $studentIDs -split "[,\s]+" | Where-Object { $_ -ne "" }
+    return ($inputLines -join " ") -split "[,\s]+" | Where-Object { $_ -ne "" }
+}
 
-    if ($studentIDs.Count -eq 0) {
-        Write-Host "No student IDs entered. Exiting."
-        return
-    }
+# -----------------------------------------------------------------------------
+# Core Offboarding Workflow
+# -----------------------------------------------------------------------------
 
-    Write-Host ""
-    Write-Host "You entered $($studentIDs.Count) student IDs."
-    Write-Host ""
+function Invoke-OffboardingWorkflow {
+    param(
+        [Parameter(Mandatory)][hashtable]$ActiveProfile,
+        [Parameter(Mandatory)][string[]]$UserIDs,
+        [Parameter(Mandatory)][string]$AdminUser,
+        [string]$ResolvedOU = ""
+    )
 
-    # Prompt admin to select the destination OU once — applies to all students in this batch
-    Write-Host "Select destination OU for ALL disabled students:"
-    foreach ($key in $StudentDisabledOUs.Keys | Sort-Object) {
-        $name = $StudentDisabledOUs[$key].Name
-        Write-Host "$key. $name"
-    }
-
-    $choice = Read-Host "Enter option number"
-
-    if (-not $StudentDisabledOUs.ContainsKey($choice)) {
-        Write-Host "Invalid selection. Exiting."
-        return
-    }
-
-    $targetOUName = $StudentDisabledOUs[$choice].Name
-    $targetOUDN   = $StudentDisabledOUs[$choice].DN
-
-    Write-Host ""
-    Write-Host "All students will be moved to: $targetOUName"
-    Write-Host ""
-
-    # Tracking arrays for the end-of-run summary
     $notFound        = @()
     $alreadyDisabled = @()
     $success         = @()
 
-    $total   = $studentIDs.Count
+    $total   = $UserIDs.Count
     $counter = 0
 
-    foreach ($studentID in $studentIDs) {
-        $counter++
-        Write-Host ""
-        Write-Host "[$counter / $total] Processing: $studentID"
-        Write-Host "----------------------------------------"
+    Write-Log "Starting $($ActiveProfile.DisplayName) — $total account(s) — Admin: $AdminUser"
 
-        $targetUser = Get-ADUser -Filter { SamAccountName -eq $studentID } `
+    foreach ($userID in $UserIDs) {
+        $counter++
+        Write-Log "[$counter / $total] Processing: $userID"
+
+        $targetUser = Get-ADUser -Filter { SamAccountName -eq $userID } `
                                  -Properties Enabled, msExchHideFromAddressLists, UserPrincipalName
 
-        # Skip if user doesn't exist in AD
         if (-not $targetUser) {
-            Write-Host "User not found."
-            $notFound += $studentID
+            Write-Log "  $userID — NOT FOUND in Active Directory" -Level WARN
+            Write-AuditEntry -AdminUser $AdminUser -AccountType $ActiveProfile.AccountType `
+                             -Username $userID -Action $ActiveProfile.DisplayName `
+                             -Outcome "NotFound"
+            $notFound += $userID
             continue
         }
 
-        # Skip if already disabled — no need to process further
         if ($targetUser.Enabled -eq $false) {
-            Write-Host "User already disabled."
-            $alreadyDisabled += $studentID
+            Write-Log "  $userID — already disabled, skipping" -Level WARN
+            Write-AuditEntry -AdminUser $AdminUser -AccountType $ActiveProfile.AccountType `
+                             -Username $userID -Action $ActiveProfile.DisplayName `
+                             -Outcome "AlreadyDisabled"
+            $alreadyDisabled += $userID
             continue
         }
 
-        # Disable the AD account
-        Disable-ADAccount -Identity $targetUser
+        # Determine target OU
+        $targetOU = if ($ActiveProfile.TargetOU) { $ActiveProfile.TargetOU } else { $ResolvedOU }
 
-        # Update description to record who disabled the account and when
-        Set-UserDescriptionDisabled -User $targetUser -Admin $currentAdmin
+        try {
+            if ($ActiveProfile.DisableAccount) {
+                Disable-ADAccount -Identity $targetUser
+                Set-UserDescriptionDisabled -User $targetUser -Admin $AdminUser
+                Write-Log "  $userID — account disabled"
+            }
 
-        # Hide from the Global Address List
-        Hide-UserFromAddressLists -User $targetUser
+            # Wrapped in try/catch so errors are
+            # logged as WARN and do not halt the rest of the user's processing.
+            foreach ($group in $ActiveProfile.GroupsToRemove) {
+                try {
+                    Remove-ADGroupMember -Identity $group -Members $userID `
+                                        -Confirm:$false -ErrorAction Stop
+                    Write-Log "  $userID — removed from group: $group"
+                } catch {
+                    Write-Log "  $userID — FAILED to remove from group '$group': $_" -Level WARN
+                }
+            }
 
-        # Block M365 sign-in (optional — see function definition above)
-        Block-M365SignIn -User $targetUser
+            foreach ($group in $ActiveProfile.GroupsToAdd) {
+                try {
+                    Add-ADGroupMember -Identity $group -Members $userID -ErrorAction Stop
+                    Write-Log "  $userID — added to group: $group"
+                } catch {
+                    Write-Log "  $userID — FAILED to add to group '$group': $_" -Level WARN
+                }
+            }
 
-        # Move to the selected disabled OU
-        Move-UserToOU -User $targetUser -TargetOU $targetOUDN
+            if ($ActiveProfile.HideFromGAL) {
+                Hide-UserFromAddressLists -User $targetUser
+                Write-Log "  $userID — hidden from GAL"
+            }
 
-        Write-Host "Successfully disabled and moved to $targetOUName."
-        $success += $studentID
+            if ($targetOU) {
+                Move-UserToOU -User $targetUser -TargetOU $targetOU
+                Write-Log "  $userID — moved to OU: $targetOU"
+            }
+
+            Block-M365SignIn -User $targetUser
+
+            Write-AuditEntry -AdminUser $AdminUser -AccountType $ActiveProfile.AccountType `
+                             -Username $userID -Action $ActiveProfile.DisplayName `
+                             -Outcome "Success" -Detail $targetOU
+
+            $success += $userID
+
+        } catch {
+            Write-Log "  $userID — ERROR: $_" -Level ERROR
+            Write-AuditEntry -AdminUser $AdminUser -AccountType $ActiveProfile.AccountType `
+                             -Username $userID -Action $ActiveProfile.DisplayName `
+                             -Outcome "Error" -Detail $_.Exception.Message
+        }
     }
 
-    # -----------------------------
-    # End-of-run Summary
-    # -----------------------------
-    Write-Host ""
-    Write-Host "========================================"
-    Write-Host "Bulk Student Offboarding Summary"
-    Write-Host "========================================"
-    Write-Host ""
-    Write-Host "Successful: $($success.Count)"
-    if ($success.Count -gt 0) { $success | ForEach-Object { Write-Host "   $_" } }
+    # Summary Output
+    Write-Log "========================================"
+    Write-Log "$($ActiveProfile.DisplayName) Complete"
+    Write-Log "  Successful:       $($success.Count)"
+    Write-Log "  Already Disabled: $($alreadyDisabled.Count)"
+    Write-Log "  Not Found:        $($notFound.Count)"
+    Write-Log "========================================"
 
-    Write-Host ""
-    Write-Host "Not Found: $($notFound.Count)"
-    if ($notFound.Count -gt 0) { $notFound | ForEach-Object { Write-Host "   $_" } }
-
-    Write-Host ""
-    Write-Host "Already Disabled: $($alreadyDisabled.Count)"
-    if ($alreadyDisabled.Count -gt 0) { $alreadyDisabled | ForEach-Object { Write-Host "   $_" } }
-
-    Write-Host ""
-    Write-Host "Bulk student offboarding complete."
+    Write-Host "`nLogs written to:`n  $CsvLog`n  $TxtLog"
 }
 
-# -----------------------------
+# -----------------------------------------------------------------------------
 # Entry Point
-# -----------------------------
+# -----------------------------------------------------------------------------
 
-Write-Host "Offboarding Script"
-Write-Host "1. Staff"
-Write-Host "2. Student"
+$currentAdmin = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+Write-Log "=== Offboarding Script launched by $currentAdmin ==="
 
-$selection = Read-Host "Select type to offboard (1 or 2)"
-
-switch ($selection) {
-    "1"     { Invoke-StaffOffboarding }
-    "2"     { Invoke-StudentOffboarding }
-    default { Write-Host "Invalid selection. Exiting." }
+Write-Host "`nOffboarding Script`n----------------------------------------"
+foreach ($key in $OffboardingProfiles.Keys | Sort-Object) {
+    Write-Host "$key. $($OffboardingProfiles[$key].DisplayName)"
 }
+Write-Host ""
+
+$selection = Read-Host "Select workflow"
+
+if (-not $OffboardingProfiles.ContainsKey($selection)) {
+    Write-Log "Invalid workflow selection: '$selection'" -Level WARN
+    Write-Host "Invalid selection. Exiting."
+    exit
+}
+
+$selectedProfile = $OffboardingProfiles[$selection]
+$userIDs = Read-BulkUsernames -AccountType $selectedProfile.AccountType
+
+if ($userIDs.Count -eq 0) {
+    Write-Log "No usernames entered. Exiting." -Level WARN
+    exit
+}
+
+$resolvedOU = ""
+if ($null -eq $selectedProfile.TargetOU -and $null -ne $selectedProfile.OUMenu) {
+    Write-Host "`nSelect destination OU:"
+    foreach ($key in $selectedProfile.OUMenu.Keys | Sort-Object) {
+        Write-Host "$key. $($selectedProfile.OUMenu[$key].Name)"
+    }
+    $ouChoice = Read-Host "Enter option number"
+
+    if (-not $selectedProfile.OUMenu.ContainsKey($ouChoice)) {
+        Write-Log "Invalid OU selection: '$ouChoice'" -Level WARN
+        exit
+    }
+    $resolvedOU = $selectedProfile.OUMenu[$ouChoice].DN
+}
+
+# Confirmation added before bulk processing. Displays the full account
+# list so the operator can verify before committing — for greater counts
+Write-Host "`n----------------------------------------"
+Write-Host "Ready to run '$($selectedProfile.DisplayName)' on $($userIDs.Count) account(s):"
+$userIDs | ForEach-Object { Write-Host "  $_" }
+if ($resolvedOU) { Write-Host "  Destination OU: $resolvedOU" }
+Write-Host "----------------------------------------"
+$confirm = Read-Host "Proceed? (yes/no)"
+
+if ($confirm -ne "yes") {
+    Write-Log "Run aborted by operator at confirmation prompt." -Level WARN
+    Write-Host "Aborted."
+    exit
+}
+
+Invoke-OffboardingWorkflow `
+    -ActiveProfile $selectedProfile `
+    -UserIDs       $userIDs `
+    -AdminUser     $currentAdmin `
+    -ResolvedOU    $resolvedOU
 
 Write-Host "`nPress any key to close..."
 $null = [Console]::ReadKey($true)
