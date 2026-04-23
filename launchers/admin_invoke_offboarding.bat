@@ -6,10 +6,11 @@ pushd "%~dp0"
 
 set "script=%~dp0..\scripting\invoke_offboarding.ps1"
 
-powershell -NoProfile -ExecutionPolicy Bypass ^
-    "Start-Process PowerShell -Verb RunAs -ArgumentList '-NoProfile -ExecutionPolicy Bypass -NoExit -File ""%script%""'"
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+    "Start-Process PowerShell -Verb RunAs -ArgumentList '-NoProfile -ExecutionPolicy Bypass -NoExit -File \"%script%\"'"
 
 REM Return to the original directory and remove the temporary drive
 popd
 
 pause
+
