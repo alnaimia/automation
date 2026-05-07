@@ -26,18 +26,19 @@ if (-not (Test-Path $LogDir)) {
     New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
 }
 
+
 # ---- Gather data -------------------------------------------
 Write-Progress -Activity "Collecting asset information" -Status "Please wait..." -PercentComplete -1
 
-$cs   = Get-CimInstance Win32_ComputerSystem
-$bios = Get-CimInstance Win32_BIOS
-$os   = Get-CimInstance Win32_OperatingSystem
-$cpu  = Get-CimInstance Win32_Processor
-$ram  = Get-CimInstance Win32_PhysicalMemory
-$disk = Get-CimInstance Win32_DiskDrive
+$assetID = Read-Host "Enter Asset ID (or leave blank by pressing 'Enter':)"
+$cs   	 = Get-CimInstance Win32_ComputerSystem
+$bios 	 = Get-CimInstance Win32_BIOS
+$os   	 = Get-CimInstance Win32_OperatingSystem
+$cpu  	 = Get-CimInstance Win32_Processor
+$ram  	 = Get-CimInstance Win32_PhysicalMemory
+$disk 	 = Get-CimInstance Win32_DiskDrive
 
 Write-Progress -Activity "Collecting asset information" -Completed
-
 # ---- Screen size -------------------------------------------
 $monitor = Get-CimInstance WmiMonitorBasicDisplayParams `
             -Namespace root\wmi `
@@ -96,6 +97,7 @@ ASSET INFORMATION LOG
 Captured: $timestamp
 $separator
 
+Asset ID      : $assetID
 Laptop Name   : $($cs.Name)
 Make          : $($cs.Manufacturer)
 Model         : $($cs.Model)
@@ -124,3 +126,4 @@ Write-Host "Done! Results appended to: $LogFile"
 Write-Host ""
 Write-Host "Press Enter to exit..." -ForegroundColor Yellow
 $null = Read-Host
+
